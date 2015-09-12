@@ -1,122 +1,121 @@
 package com.forecastthis.linesampler;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.Namespace;
+public class LineSampler implements Closeable {
 
-public class LineSampler {
-  
-  public static void main(String[] args) {
-  
-    ArgumentParser parser = ArgumentParsers.newArgumentParser("Line sampler").defaultHelp(true).description("Select line subset from a file");
-    parser.addArgument("-i", "--input").type(String.class).help("input file").nargs(1).required(true).setDefault("");
-    parser.addArgument("-o", "--output").help("output file").type(String.class).nargs(1).required(true);
-    parser.addArgument("-c", "--complement").help("path to save complement (not selected lines in").type(String.class).nargs(1);
-    parser.addArgument("-p", "--prob").help("Probability of selecting a line. Value from range [0, 100].").type(String.class).nargs(1).required(true);
-    parser.addArgument("-H", "--header").help("number of header lines that should always be selected. default 0").type(Integer.class).nargs(1).setDefault(0);
-    parser.addArgument("-s", "--seed").help("random number generator seed").type(Integer.class).nargs(1).setDefault(1);
-    
-    Namespace namespace = null;
-    
-    try {
-      namespace = parser.parseArgs(args);
-    } catch (ArgumentParserException e) {
-      System.err.println(e.getMessage());
-      System.exit(1);
-    }
-    
-    Map<String, Object> m = namespace.getAttrs();
-    
-    String inputPath = ((List<?>)m.get("input")).get(0).toString();
-    String outputPath = ((List<?>)m.get("output")).get(0).toString();
-    String complementPath = ((List<?>)m.get("complement")).get(0).toString();
-    double p = Double.parseDouble(((List<?>)m.get("prob")).get(0).toString());
-    int h = Integer.parseInt(((List<?>)m.get("header")).get(0).toString());
-    int seed = Integer.parseInt(((List<?>)m.get("seed")).get(0).toString());
-    
-    
-    File input = new File(inputPath);
-    File output = new File(outputPath);
-    File complement = new File(complementPath);
-    Random r = new Random(seed);
-    
-    
-    
-    FileWriter fw = null;
-    if(output != null) {
-      try {
-        fw = new FileWriter(output);
-      } catch (IOException e) {
-        e.printStackTrace(System.err);
-        System.exit(-1);
-      }
-    }
-    
-    FileWriter cfw = null;
-    if(complement != null) {
-      try {
-        cfw = new FileWriter(complement);
-      } catch (IOException e) {
-        e.printStackTrace(System.err);
-        System.exit(-1);
-      }
-    }
-    
-    try(FileReader fr = new FileReader(input)) {
-      try(BufferedReader br = new BufferedReader(fr)) {
-        String line;
-        for (int index=0; (line = br.readLine()) != null; index++) {
-        
-          String l = String.format("%s\n", line);
-          
-          if(index < h) {
-            fw.write(l);
-            cfw.write(l);
-          }
-          else {
-            if(r.nextDouble() < p) {
-                  fw.write(l);   
-             }
-            else {
-              cfw.write(l);
-            }
-          }
-          
-           
-        }
-      }
-    }
-    catch(Exception e) {
-      e.printStackTrace(System.err);
-      System.exit(-1);
-    }
-    
-    if(fw != null) {
-      try {
-        fw.close();
-      } catch (IOException e) {
-        e.printStackTrace(System.err);
-        System.exit(-1);
-      }
-    }
-    
-    if(cfw != null) {
-      try {
-        cfw.close();
-      } catch (IOException e) {
-        e.printStackTrace(System.err);
-        System.exit(-1);
-      }
-    }
-  }
+	public static void main(String[] args) {
+
+		Arguments arguments = Arguments.parse(args);
+
+		try(LineSampler sampler = new LineSampler(arguments)) {
+
+			sampler.run();
+		}
+		catch(Exception e) {
+			e.printStackTrace();
+			System.exit(1);
+		}
+	}
+
+	final Arguments arguments;
+
+	final List<Closeable> resources = new ArrayList<>();
+
+	LineSampler(Arguments arguments) {
+		this.arguments = arguments;
+	}
+
+	@Override
+	public void close() throws IOException {
+		for(Closeable resource : resources) {
+			resource.close();
+		}
+	}
+
+	void run() throws IOException {
+
+		OutputStream os = arguments.getOutputFile()
+				.map(f -> openOutput(f))
+				.orElse(System.out);
+		Writer output = writer(os);
+
+		Optional<Writer> outputComplement = arguments.getOutputComplementFile()
+				.map(f -> openOutput(f))
+				.map(s -> writer(s));
+
+		InputStream is = arguments.getInputFile()
+				.map(f -> openInput(f))
+				.orElse(System.in);
+		Reader input = reader(is);
+
+		Random r = new Random(arguments.getSeed());
+
+		try(BufferedReader reader = new BufferedReader(input)) {
+
+			String line;
+			for (int index=0; (line = reader.readLine()) != null; index++) {
+				if(index < arguments.getHeaderSize()) {
+					write(output, line);
+					write(outputComplement, line);
+				}
+				else {
+					if(r.nextDouble() < arguments.getProb()) {
+						write(output, line);
+					}
+					else {
+						write(outputComplement, line);
+					}
+				}
+			}
+		}
+
+		output.flush();
+		if(outputComplement.isPresent()) outputComplement.get().flush();
+	}
+
+	InputStream openInput(File file) {
+		try {
+			InputStream stream = new FileInputStream(file);
+			resources.add(stream);
+			return stream;
+		}
+		catch(FileNotFoundException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	private static Reader reader(InputStream stream) {
+		return new InputStreamReader(stream, Charset.forName("UTF-8"));
+	}
+
+	OutputStream openOutput(File file) {
+		try {
+			OutputStream stream = new FileOutputStream(file);
+			resources.add(stream);
+			return stream;
+		}
+		catch(FileNotFoundException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	Writer writer(OutputStream stream) {
+		return new OutputStreamWriter(stream, Charset.forName("UTF-8"));
+	}
+
+	void write(Writer writer, String line) throws IOException {
+		writer.write(String.format("%s\n", line));
+	}
+
+	void write(Optional<Writer> writer, String line) throws IOException {
+		if(writer.isPresent()) {
+			write(writer.get(), line);
+		}
+	}
 }
