@@ -8,7 +8,7 @@
 
     <groupId>com.forecastthis</groupId>
     <artifactId>line-sampler</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>line-sampler</name>
 
     <build>
